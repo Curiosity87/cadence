@@ -1,19 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Link, NavLink, Outlet } from "react-router";
-import { api, type Host } from "../../api.ts";
+import { api, type Owner } from "../../api.ts";
 import { CalendarIcon, ClockIcon, LinkIcon, UserIcon } from "../../components/Icons.tsx";
 import { Logo } from "../../components/Logo.tsx";
+import { useI18n } from "../../i18n.tsx";
 
-type Ctx = { host: Host | null; setHost: (h: Host) => void; toast: (msg: string) => void };
+type Ctx = { host: Owner | null; setHost: (h: Owner) => void; toast: (msg: string) => void };
 const AppContext = createContext<Ctx>({ host: null, setHost: () => {}, toast: () => {} });
 export const useApp = () => useContext(AppContext);
 
 export function AppLayout() {
-  const [host, setHost] = useState<Host | null>(null);
+  const { t } = useI18n();
+  const [host, setHost] = useState<Owner | null>(null);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    api<Host>("/me").then(setHost);
+    api<Owner>("/me").then(setHost);
   }, []);
 
   const toast = useCallback((msg: string) => {
@@ -33,16 +35,16 @@ export function AppLayout() {
       <div className="app">
         <aside className="sidebar">
           <Logo to="/app" />
-          <Link to="/app/event-types/new" className="btn btn-primary create">+ Create</Link>
-          {nav("/app", "Scheduling", <LinkIcon />, true)}
-          {nav("/app/meetings", "Meetings", <CalendarIcon />)}
-          {nav("/app/availability", "Availability", <ClockIcon />)}
-          {nav("/app/settings", "Settings", <UserIcon />)}
+          <Link to="/app/event-types/new" className="btn btn-primary create">{t.nav.create}</Link>
+          {nav("/app", t.nav.scheduling, <LinkIcon />, true)}
+          {nav("/app/meetings", t.nav.meetings, <CalendarIcon />)}
+          {nav("/app/availability", t.nav.availability, <ClockIcon />)}
+          {nav("/app/settings", t.nav.settings, <UserIcon />)}
           {host && (
             <div className="bottom">
-              Signed in as <strong>{host.name}</strong>
+              {t.nav.signedInAs} <strong>{host.name}</strong>
               <br />
-              <Link to={`/${host.slug}`} target="_blank">View booking page ↗</Link>
+              <Link to={`/${host.slug}`} target="_blank">{t.nav.viewBookingPage}</Link>
             </div>
           )}
         </aside>

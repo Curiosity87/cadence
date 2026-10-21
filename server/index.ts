@@ -2,7 +2,11 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { createApi } from "./app.ts";
+import { loadConfig } from "./config.ts";
 import { openDatabase } from "./db.ts";
+import { createGoogleProvider } from "./google.ts";
+import { createMicrosoftProvider } from "./microsoft.ts";
+import { createSmtpMailer } from "./notify.ts";
 
 const production = process.env.NODE_ENV === "production";
 const port = Number(process.env.PORT ?? 5173);
@@ -16,7 +20,9 @@ if (production && !adminPassword) {
 const app = express();
 app.set("trust proxy", true);
 app.use(requireAdmin);
-app.use("/api", createApi(openDatabase()));
+const config = loadConfig();
+const providers = { google: createGoogleProvider(config), microsoft: createMicrosoftProvider(config) };
+app.use("/api", createApi(openDatabase(), { config, providers, smtp: createSmtpMailer(config) }));
 
 if (production) {
   const dist = path.resolve("dist");
@@ -32,7 +38,7 @@ app.listen(port, () => console.log(`Cadence running at http://localhost:${port}`
 
 /** HTTP Basic auth for the host dashboard and its API; booking pages stay public. */
 function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const isAdminPath = /^\/app(\/|$)|^\/api\/(me|event-types|availability|scheduled)(\/|$)/.test(req.path);
+  const isAdminPath = /^\/app(\/|$)|^\/api\/(me|event-types|availability|scheduled|calendar\/((google|microsoft)\/connect|disconnect))(\/|$)/.test(req.path);
   if (!adminPassword || !isAdminPath) return next();
 
   const [scheme, encoded] = (req.headers.authorization ?? "").split(" ");

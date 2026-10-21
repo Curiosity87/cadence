@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { api, type EventType, type LocationKind } from "../../api.ts";
+import { useI18n } from "../../i18n.tsx";
 import { useApp } from "./AppLayout.tsx";
 
 const COLORS = ["#f5c518", "#ff4f00", "#e55cff", "#8247f5", "#0099ff", "#0ae8f0", "#17e885", "#ccf000", "#ffa600"];
@@ -13,7 +14,7 @@ const blank: Draft = {
   description: "",
   duration: 30,
   color: "#8247f5",
-  location_kind: "video",
+  location_kind: "online_meeting",
   location_detail: "",
   active: 1,
   min_notice_minutes: 240,
@@ -29,6 +30,8 @@ export function EventTypeEditor() {
   const isNew = !id || id === "new";
   const navigate = useNavigate();
   const { host, toast } = useApp();
+  const { t } = useI18n();
+  const e = t.editor;
   const [draft, setDraft] = useState<Draft | null>(isNew ? blank : null);
   const [slugTouched, setSlugTouched] = useState(!isNew);
   const [error, setError] = useState("");
@@ -38,17 +41,18 @@ export function EventTypeEditor() {
     if (!isNew) api<EventType>(`/event-types/${id}`).then(setDraft, (e: Error) => setError(e.message));
   }, [id, isNew]);
 
-  if (!draft) return <p className="muted">{error || "Loading…"}</p>;
+  if (!draft) return <p className="muted">{error || t.common.loading}</p>;
 
+  const meetingName = host?.calendar_provider === "microsoft" ? "Microsoft Teams" : host?.calendar_provider === "google" ? "Google Meet" : "";
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft({ ...draft, [key]: value });
 
-  async function save(e: FormEvent) {
-    e.preventDefault();
+  async function save(ev: FormEvent) {
+    ev.preventDefault();
     setSaving(true);
     setError("");
     try {
       await api(isNew ? "/event-types" : `/event-types/${id}`, { method: isNew ? "POST" : "PUT", body: draft });
-      toast(isNew ? "Event type created" : "Changes saved");
+      toast(isNew ? e.created : e.saved);
       navigate("/app");
     } catch (err) {
       setError((err as Error).message);
@@ -58,79 +62,85 @@ export function EventTypeEditor() {
   }
 
   async function remove() {
-    if (!confirm(`Delete "${draft!.title}"? Its scheduled meetings will be removed too.`)) return;
+    if (!confirm(e.confirmDelete(draft!.title))) return;
     await api(`/event-types/${id}`, { method: "DELETE" });
-    toast("Event type deleted");
+    toast(e.deleted);
     navigate("/app");
   }
 
   return (
     <form onSubmit={save} style={{ maxWidth: 720 }}>
       <div className="page-head">
-        <h1>{isNew ? "New event type" : "Edit event type"}</h1>
+        <h1>{isNew ? e.newTitle : e.editTitle}</h1>
         <div className="row">
-          <button type="button" className="btn btn-outline" onClick={() => navigate("/app")}>Cancel</button>
-          <button className="btn btn-primary" disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+          <button type="button" className="btn btn-outline" onClick={() => navigate("/app")}>{t.common.cancel}</button>
+          <button className="btn btn-primary" disabled={saving}>{saving ? t.common.saving : t.common.save}</button>
         </div>
       </div>
 
       <div className="card" style={{ padding: 28 }}>
         <div className="field">
-          <label htmlFor="title">Event name</label>
+          <label htmlFor="title">{e.name}</label>
           <input
             id="title"
             required
             value={draft.title}
-            onChange={(e) => setDraft({ ...draft, title: e.target.value, slug: slugTouched ? draft.slug : slugify(e.target.value) })}
+            onChange={(ev) => setDraft({ ...draft, title: ev.target.value, slug: slugTouched ? draft.slug : slugify(ev.target.value) })}
           />
         </div>
         <div className="field">
-          <label htmlFor="slug">Event link</label>
+          <label htmlFor="slug">{e.link}</label>
           <div className="row" style={{ gap: 6 }}>
             <span className="muted" style={{ whiteSpace: "nowrap" }}>{location.host}/{host?.slug}/</span>
             <input
               id="slug"
               required
               value={draft.slug}
-              onChange={(e) => {
+              onChange={(ev) => {
                 setSlugTouched(true);
-                set("slug", slugify(e.target.value));
+                set("slug", slugify(ev.target.value));
               }}
             />
           </div>
         </div>
         <div className="grid-2">
           <div className="field">
-            <label htmlFor="duration">Duration (minutes)</label>
-            <select id="duration" value={draft.duration} onChange={(e) => set("duration", Number(e.target.value))}>
-              {[15, 20, 30, 45, 60, 90, 120].map((m) => <option key={m} value={m}>{m} min</option>)}
-              {![15, 20, 30, 45, 60, 90, 120].includes(draft.duration) && <option value={draft.duration}>{draft.duration} min</option>}
+            <label htmlFor="duration">{e.duration}</label>
+            <select id="duration" value={draft.duration} onChange={(ev) => set("duration", Number(ev.target.value))}>
+              {[15, 20, 30, 45, 60, 90, 120].map((m) => <option key={m} value={m}>{t.duration(m)}</option>)}
+              {![15, 20, 30, 45, 60, 90, 120].includes(draft.duration) && <option value={draft.duration}>{t.duration(draft.duration)}</option>}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="loc">Location</label>
-            <select id="loc" value={draft.location_kind} onChange={(e) => set("location_kind", e.target.value as LocationKind)}>
-              <option value="video">Video call</option>
-              <option value="phone">Phone call</option>
-              <option value="in_person">In-person meeting</option>
+            <label htmlFor="loc">{e.location}</label>
+            <select id="loc" value={draft.location_kind} onChange={(ev) => set("location_kind", ev.target.value as LocationKind)}>
+              <option value="online_meeting">{e.onlineMeeting(meetingName)}</option>
+              <option value="video">{e.ownVideo}</option>
+              <option value="phone">{t.location.phone}</option>
+              <option value="in_person">{t.location.in_person}</option>
             </select>
           </div>
         </div>
-        <div className="field">
-          <label htmlFor="locd">Location details</label>
+        {draft.location_kind === "online_meeting" && !host?.calendar_provider && (
+          <p className="error" style={{ marginTop: -8 }}>
+            {e.connectHint} <Link to="/app/settings">{e.settingsLink} →</Link>
+          </p>
+        )}
+        {draft.location_kind !== "online_meeting" && <div className="field">
+          <label htmlFor="locd">{e.locationDetails}</label>
           <input
             id="locd"
-            placeholder={draft.location_kind === "in_person" ? "Street address" : draft.location_kind === "phone" ? "Who calls whom" : "Meeting link"}
+            placeholder={draft.location_kind === "in_person" ? e.placeholderAddress : draft.location_kind === "phone" ? e.placeholderPhone : e.placeholderLink}
             value={draft.location_detail}
-            onChange={(e) => set("location_detail", e.target.value)}
+            onChange={(ev) => set("location_detail", ev.target.value)}
           />
+        </div>}
+        <div className="field">
+          <label htmlFor="desc">{e.description}</label>
+          <textarea id="desc" value={draft.description} onChange={(ev) => set("description", ev.target.value)} />
         </div>
         <div className="field">
-          <label htmlFor="desc">Description / instructions</label>
-          <textarea id="desc" value={draft.description} onChange={(e) => set("description", e.target.value)} />
-        </div>
-        <div className="field">
-          <label>Event color</label>
+          <label>{e.color}</label>
           <div className="row" style={{ flexWrap: "wrap" }}>
             {COLORS.map((c) => (
               <button
@@ -146,32 +156,32 @@ export function EventTypeEditor() {
         </div>
       </div>
 
-      <h2 style={{ fontSize: 18, margin: "28px 0 12px" }}>Scheduling limits</h2>
+      <h2 style={{ fontSize: 18, margin: "28px 0 12px" }}>{e.limits}</h2>
       <div className="card" style={{ padding: 28 }}>
         <div className="grid-2">
           <div className="field">
-            <label htmlFor="notice">Minimum notice</label>
-            <select id="notice" value={draft.min_notice_minutes} onChange={(e) => set("min_notice_minutes", Number(e.target.value))}>
-              {[[0, "None"], [60, "1 hour"], [240, "4 hours"], [720, "12 hours"], [1440, "1 day"], [2880, "2 days"]].map(([v, l]) => (
+            <label htmlFor="notice">{e.minNotice}</label>
+            <select id="notice" value={draft.min_notice_minutes} onChange={(ev) => set("min_notice_minutes", Number(ev.target.value))}>
+              {([[0, e.none], [60, e.hours(1)], [240, e.hours(4)], [720, e.hours(12)], [1440, e.days(1)], [2880, e.days(2)]] as const).map(([v, l]) => (
                 <option key={v} value={v}>{l}</option>
               ))}
             </select>
-            <span className="hint">Invitees can't book closer to the start than this.</span>
+            <span className="hint">{e.minNoticeHint}</span>
           </div>
           <div className="field">
-            <label htmlFor="window">Booking window (days into the future)</label>
-            <input id="window" type="number" min={1} max={365} value={draft.max_days_ahead} onChange={(e) => set("max_days_ahead", Number(e.target.value))} />
+            <label htmlFor="window">{e.window}</label>
+            <input id="window" type="number" min={1} max={365} value={draft.max_days_ahead} onChange={(ev) => set("max_days_ahead", Number(ev.target.value))} />
           </div>
           <div className="field">
-            <label htmlFor="buffer">Buffer before and after</label>
-            <select id="buffer" value={draft.buffer_minutes} onChange={(e) => set("buffer_minutes", Number(e.target.value))}>
-              {[0, 5, 10, 15, 30, 60].map((m) => <option key={m} value={m}>{m ? `${m} min` : "None"}</option>)}
+            <label htmlFor="buffer">{e.buffer}</label>
+            <select id="buffer" value={draft.buffer_minutes} onChange={(ev) => set("buffer_minutes", Number(ev.target.value))}>
+              {[0, 5, 10, 15, 30, 60].map((m) => <option key={m} value={m}>{m ? t.duration(m) : e.none}</option>)}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="interval">Start time increments</label>
-            <select id="interval" value={draft.slot_interval} onChange={(e) => set("slot_interval", Number(e.target.value))}>
-              {[10, 15, 20, 30, 60].map((m) => <option key={m} value={m}>{m} min</option>)}
+            <label htmlFor="interval">{e.interval}</label>
+            <select id="interval" value={draft.slot_interval} onChange={(ev) => set("slot_interval", Number(ev.target.value))}>
+              {[10, 15, 20, 30, 60].map((m) => <option key={m} value={m}>{t.duration(m)}</option>)}
             </select>
           </div>
         </div>
@@ -180,7 +190,7 @@ export function EventTypeEditor() {
       {error && <p className="error" role="alert">{error}</p>}
       {!isNew && (
         <div style={{ marginTop: 28 }}>
-          <button type="button" className="btn btn-danger" onClick={remove}>Delete event type</button>
+          <button type="button" className="btn btn-danger" onClick={remove}>{e.deleteButton}</button>
         </div>
       )}
     </form>

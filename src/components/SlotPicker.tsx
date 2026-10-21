@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.ts";
-import { allTimezones, formatTime, monthKey, timezoneLabel } from "../time.ts";
-
-const DOW = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+import { useI18n } from "../i18n.tsx";
+import { allTimezones, formatDay, formatMonth, formatTime, monthKey, timezoneLabel } from "../time.ts";
 
 type Props = {
   hostSlug: string;
@@ -16,6 +15,7 @@ type Props = {
 
 /** Month calendar of bookable days, plus the list of start times for the chosen day. */
 export function SlotPicker({ hostSlug, eventSlug, timezone, onTimezoneChange, onConfirm, excludeSlot }: Props) {
+  const { t } = useI18n();
   const today = new Date();
   const [cursor, setCursor] = useState({ year: today.getFullYear(), month: today.getMonth() });
   const [days, setDays] = useState<Record<string, string[]> | null>(null);
@@ -51,7 +51,7 @@ export function SlotPicker({ hostSlug, eventSlug, timezone, onTimezoneChange, on
   }, [cursor]);
 
   const isCurrentMonth = cursor.year === today.getFullYear() && cursor.month === today.getMonth();
-  const monthName = new Date(cursor.year, cursor.month, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
+  const monthName = formatMonth(cursor.year, cursor.month);
   const shift = (delta: number) => {
     const d = new Date(cursor.year, cursor.month + delta, 1);
     setCursor({ year: d.getFullYear(), month: d.getMonth() });
@@ -63,12 +63,12 @@ export function SlotPicker({ hostSlug, eventSlug, timezone, onTimezoneChange, on
     <>
       <div>
         <div className="cal-head">
-          <button className="cal-nav" onClick={() => shift(-1)} disabled={isCurrentMonth} aria-label="Previous month">‹</button>
+          <button className="cal-nav" onClick={() => shift(-1)} disabled={isCurrentMonth} aria-label={t.booking.prevMonth}>‹</button>
           <span>{monthName}</span>
-          <button className="cal-nav" onClick={() => shift(1)} aria-label="Next month">›</button>
+          <button className="cal-nav" onClick={() => shift(1)} aria-label={t.booking.nextMonth}>›</button>
         </div>
         <div className="cal-grid" role="grid" aria-busy={days === null}>
-          {DOW.map((d) => (
+          {t.booking.dow.map((d) => (
             <div key={d} className="cal-dow">{d}</div>
           ))}
           {cells.map((day, i) => {
@@ -82,7 +82,7 @@ export function SlotPicker({ hostSlug, eventSlug, timezone, onTimezoneChange, on
                 key={iso}
                 className={cls}
                 disabled={!available}
-                aria-label={`${iso}${available ? ", times available" : ""}`}
+                aria-label={`${iso}${available ? `, ${t.booking.timesAvailable}` : ""}`}
                 onClick={() => {
                   setSelectedDate(iso);
                   setChosen(null);
@@ -93,10 +93,10 @@ export function SlotPicker({ hostSlug, eventSlug, timezone, onTimezoneChange, on
             );
           })}
         </div>
-        {days && Object.keys(days).length === 0 && <p className="muted" style={{ textAlign: "center", marginTop: 16 }}>No times available this month.</p>}
+        {days && Object.keys(days).length === 0 && <p className="muted" style={{ textAlign: "center", marginTop: 16 }}>{t.booking.noTimes}</p>}
         {error && <p className="error">{error}</p>}
         <div className="tz">
-          <label htmlFor="tz">Time zone</label>
+          <label htmlFor="tz">{t.common.timeZone}</label>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <select id="tz" value={timezone} onChange={(e) => onTimezoneChange(e.target.value)}>
               {allTimezones().map((tz) => (
@@ -113,13 +113,13 @@ export function SlotPicker({ hostSlug, eventSlug, timezone, onTimezoneChange, on
       {selectedDate && (
         <div className="slots">
           <h3>
-            {new Date(`${selectedDate}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+            {formatDay(selectedDate)}
           </h3>
           {slots.map((s) =>
             chosen === s ? (
               <div className="slot-row" key={s}>
                 <button className="slot chosen">{formatTime(s, timezone, hour12)}</button>
-                <button className="slot-next" onClick={() => onConfirm(s)}>Next</button>
+                <button className="slot-next" onClick={() => onConfirm(s)}>{t.booking.next}</button>
               </div>
             ) : (
               <button className="slot" key={s} onClick={() => setChosen(s)}>{formatTime(s, timezone, hour12)}</button>

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router";
+import { I18nProvider } from "./i18n.tsx";
 import { Landing } from "./pages/Landing.tsx";
 import { AppLayout } from "./pages/app/AppLayout.tsx";
 import { Availability } from "./pages/app/Availability.tsx";
@@ -15,20 +16,22 @@ import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/app" element={<AppLayout />}>
-          <Route index element={<EventTypes />} />
-          <Route path="event-types/:id" element={<EventTypeEditor />} />
-          <Route path="meetings" element={<Meetings />} />
-          <Route path="availability" element={<Availability />} />
-          <Route path="settings" element={<Settings />} />
-        </Route>
-        <Route path="/booking/:token" element={<BookingPage />} />
-        <Route path="/:host" element={<HostPage />} />
-        <Route path="/:host/:event" element={<EventPage />} />
-      </Routes>
-    </BrowserRouter>
+    <I18nProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/app" element={<AppLayout />}>
+            <Route index element={<EventTypes />} />
+            <Route path="event-types/:id" element={<EventTypeEditor />} />
+            <Route path="meetings" element={<Meetings />} />
+            <Route path="availability" element={<Availability />} />
+            <Route path="settings" element={<Settings />} />
+          </Route>
+          <Route path="/booking/:token" element={<BookingPage />} />
+          <Route path="/:host" element={<HostPage />} />
+          <Route path="/:host/:event" element={<EventPage />} />
+        </Routes>
+      </BrowserRouter>
+    </I18nProvider>
   </StrictMode>,
 );
