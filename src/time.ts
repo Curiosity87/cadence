@@ -1,16 +1,27 @@
+import { getLocale } from "./i18n.tsx";
+
 export const browserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export const allTimezones = (): string[] =>
   typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [browserTimezone()];
 
 export function formatTime(iso: string, timeZone: string, hour12 = false) {
-  return new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", minute: "2-digit", hour12 }).format(new Date(iso));
+  return new Intl.DateTimeFormat(getLocale(), { timeZone, hour: "numeric", minute: "2-digit", hour12 }).format(new Date(iso));
 }
 
 export function formatLongDate(iso: string, timeZone: string) {
-  return new Intl.DateTimeFormat("en-US", { timeZone, weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(
+  return new Intl.DateTimeFormat(getLocale(), { timeZone, weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(
     new Date(iso),
   );
+}
+
+/** Weekday and date of a local calendar day (YYYY-MM-DD), e.g. "Thursday, October 22". */
+export function formatDay(isoDate: string) {
+  return new Date(`${isoDate}T12:00:00`).toLocaleDateString(getLocale(), { weekday: "long", month: "long", day: "numeric" });
+}
+
+export function formatMonth(year: number, monthIndex: number) {
+  return new Date(year, monthIndex, 1).toLocaleString(getLocale(), { month: "long", year: "numeric" });
 }
 
 /** "09:30 - 10:00, Wednesday, October 22, 2026" */
@@ -32,13 +43,6 @@ export function minutesToHHMM(m: number) {
 export function hhmmToMinutes(s: string) {
   const [h, m] = s.split(":").map(Number);
   return h * 60 + m;
-}
-
-export function durationLabel(minutes: number) {
-  if (minutes < 60) return `${minutes} min`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m ? `${h} hr ${m} min` : `${h} hr`;
 }
 
 /** Local calendar month as "YYYY-MM". */

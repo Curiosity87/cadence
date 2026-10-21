@@ -9,9 +9,20 @@ export type Host = {
   email: string;
   timezone: string;
   welcome: string;
+  language: Language;
+  /** Connected calendar account; '' when none. Only one provider is connected at a time. */
+  calendar_provider: CalendarProviderId | "";
+  calendar_refresh_token: string;
+  calendar_email: string;
+  /** How notification emails are delivered. */
+  email_via: "smtp" | "microsoft";
 };
 
-export type LocationKind = "video" | "phone" | "in_person";
+export type Language = "en" | "sv";
+export type CalendarProviderId = "google" | "microsoft";
+
+/** online_meeting: a Google Meet or Teams link from the connected calendar. */
+export type LocationKind = "online_meeting" | "video" | "phone" | "in_person";
 
 export type EventType = {
   id: number;
@@ -52,6 +63,11 @@ export type Booking = {
   status: "active" | "cancelled";
   cancel_reason: string;
   created_at: string;
+  meeting_url: string;
+  calendar_provider: CalendarProviderId | "";
+  calendar_event_id: string;
+  /** Bumped on every change so calendar clients replace the earlier invite. */
+  sequence: number;
 };
 
 export function openDatabase(file = process.env.DB_PATH ?? "data/cadence.db"): DatabaseSync {
@@ -112,8 +128,44 @@ export function openDatabase(file = process.env.DB_PATH ?? "data/cadence.db"): D
     );
     CREATE INDEX IF NOT EXISTS bookings_start ON bookings (start_utc);
   `);
+  renameColumns(db, "hosts", { google_refresh_token: "calendar_refresh_token", google_email: "calendar_email" });
+  addMissingColumns(db, "hosts", {
+    language: "TEXT NOT NULL DEFAULT 'en'",
+    calendar_provider: "TEXT NOT NULL DEFAULT ''",
+    calendar_refresh_token: "TEXT NOT NULL DEFAULT ''",
+    calendar_email: "TEXT NOT NULL DEFAULT ''",
+    email_via: "TEXT NOT NULL DEFAULT 'smtp'",
+  });
+  db.exec("UPDATE hosts SET calendar_provider = 'google' WHERE calendar_provider = '' AND calendar_refresh_token != ''");
+  renameColumns(db, "bookings", { meet_url: "meeting_url", google_event_id: "calendar_event_id" });
+  addMissingColumns(db, "bookings", {
+    meeting_url: "TEXT NOT NULL DEFAULT ''",
+    calendar_provider: "TEXT NOT NULL DEFAULT ''",
+    calendar_event_id: "TEXT NOT NULL DEFAULT ''",
+    sequence: "INTEGER NOT NULL DEFAULT 0",
+  });
+  db.exec("UPDATE bookings SET calendar_provider = 'google' WHERE calendar_provider = '' AND calendar_event_id != ''");
+  db.exec("UPDATE event_types SET location_kind = 'online_meeting' WHERE location_kind = 'google_meet'");
   seed(db);
   return db;
+}
+
+// Lightweight migrations: databases created by older versions get the new columns.
+const columnsOf = (db: DatabaseSync, table: string) =>
+  new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name));
+
+function addMissingColumns(db: DatabaseSync, table: string, columns: Record<string, string>) {
+  const existing = columnsOf(db, table);
+  for (const [name, definition] of Object.entries(columns)) {
+    if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+function renameColumns(db: DatabaseSync, table: string, renames: Record<string, string>) {
+  const existing = columnsOf(db, table);
+  for (const [from, to] of Object.entries(renames)) {
+    if (existing.has(from) && !existing.has(to)) db.exec(`ALTER TABLE ${table} RENAME COLUMN ${from} TO ${to}`);
+  }
 }
 
 function seed(db: DatabaseSync) {
@@ -134,8 +186,8 @@ function seed(db: DatabaseSync) {
     INSERT INTO event_types (host_id, title, slug, description, duration, color, location_kind, location_detail)
     VALUES (1, ?, ?, ?, ?, ?, ?, ?)
   `);
-  insertEvent.run("15 Minute Meeting", "15min", "A quick intro call.", 15, "#f5c518", "video", "Video link sent after booking");
-  insertEvent.run("30 Minute Meeting", "30min", "Let's talk through your project.", 30, "#8247f5", "video", "Video link sent after booking");
+  insertEvent.run("15 Minute Meeting", "15min", "A quick intro call.", 15, "#f5c518", "online_meeting", "");
+  insertEvent.run("30 Minute Meeting", "30min", "Let's talk through your project.", 30, "#8247f5", "online_meeting", "");
   insertEvent.run("60 Minute Consultation", "60min", "An in-depth working session.", 60, "#0ae8f0", "phone", "I'll call the number you provide");
 
   const insertRule = db.prepare(

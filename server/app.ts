@@ -1,7 +1,11 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { AvailabilityRule, Booking, EventType, Host } from "./db.ts";
+import type { Config } from "./config.ts";
+import { randomBytes } from "node:crypto";
+import type { CalendarProvider, ProviderAuth, Providers } from "./calendar.ts";
+import type { AvailabilityRule, Booking, CalendarProviderId, EventType, Host } from "./db.ts";
+import { buildEmails, type Change, type SendEmail } from "./notify.ts";
 import { availableSlots, isSlotAvailable } from "./slots.ts";
 
 class HttpError extends Error {
@@ -14,7 +18,11 @@ class HttpError extends Error {
 
 const HOST_ID = 1; // Single-host app: there is no login, the host dashboard edits host 1.
 
-export function createApi(db: DatabaseSync) {
+export type Integrations = { config: Config; providers: Providers; smtp: SendEmail | null };
+
+const PROVIDER_IDS: CalendarProviderId[] = ["google", "microsoft"];
+
+export function createApi(db: DatabaseSync, { config, providers, smtp }: Integrations) {
   const api = express.Router();
   api.use(express.json());
 
@@ -50,11 +58,108 @@ export function createApi(db: DatabaseSync) {
     if (!booking) throw new HttpError(404, "Booking not found.");
     return booking;
   };
-  const bookingView = (b: Booking) => {
-    const et = db.prepare("SELECT * FROM event_types WHERE id = ?").get(b.event_type_id) as EventType;
-    const host = db.prepare("SELECT * FROM hosts WHERE id = ?").get(et.host_id) as Host;
-    return { booking: b, eventType: et, host: publicHost(host) };
+  const bookingContext = (b: Booking) => {
+    const eventType = db.prepare("SELECT * FROM event_types WHERE id = ?").get(b.event_type_id) as EventType;
+    const host = db.prepare("SELECT * FROM hosts WHERE id = ?").get(eventType.host_id) as Host;
+    return { booking: b, eventType, host };
   };
+  const bookingView = (b: Booking) => {
+    const { eventType, host } = bookingContext(b);
+    const { calendar_event_id: _, ...booking } = b;
+    return { booking, eventType, host: publicHost(host), emailed: emailSender(host) !== null };
+  };
+  const ownerView = () => {
+    const { calendar_refresh_token, ...host } = getHost();
+    return {
+      ...host,
+      calendar_provider: calendar_refresh_token ? host.calendar_provider : "",
+      providers_configured: { google: providers.google.configured(), microsoft: providers.microsoft.configured() },
+      smtp_configured: smtp !== null,
+      email_enabled: emailSender(getHost()) !== null,
+    };
+  };
+
+  // ---------- Calendar and email plumbing ----------
+
+  /** The host's connected calendar, if any. */
+  const connected = (host: Host): CalendarProvider | null =>
+    host.calendar_provider && host.calendar_refresh_token && providers[host.calendar_provider].configured()
+      ? providers[host.calendar_provider]
+      : null;
+  const authFor = (host: Host): ProviderAuth => ({
+    refreshToken: host.calendar_refresh_token,
+    onRefreshToken: (token) => db.prepare("UPDATE hosts SET calendar_refresh_token = ? WHERE id = ?").run(token, host.id),
+  });
+  const meetingLabel = (host: Host) => connected(host)?.meetingLabel ?? "";
+
+  /** Microsoft 365 mailbox when chosen and connected, otherwise SMTP; null means email is off. */
+  function emailSender(host: Host): SendEmail | null {
+    const provider = connected(host);
+    if (host.email_via === "microsoft" && provider?.sendMail) return (e) => provider.sendMail!(authFor(host), e);
+    return smtp;
+  }
+
+  /** Emails go out in the background; a mail server hiccup must never fail a booking. */
+  function notify(change: Change, token: string) {
+    const ctx = bookingContext(bookingByToken(token));
+    const send = emailSender(ctx.host);
+    const emails = buildEmails(change, { ...ctx, publicUrl: config.publicUrl, meetingLabel: meetingLabel(ctx.host) });
+    if (!send) {
+      for (const e of emails) console.log(`[email not sent: no email delivery configured] to=${e.to} subject="${e.subject}"`);
+      return;
+    }
+    void (async () => {
+      for (const e of emails) {
+        if (!e.to) continue;
+        try {
+          await send(e);
+        } catch (err) {
+          console.error(`Failed to send email to ${e.to}:`, err);
+        }
+      }
+    })();
+  }
+
+  async function createCalendarEvent(b: Booking) {
+    const { eventType, host } = bookingContext(b);
+    const provider = connected(host);
+    if (eventType.location_kind !== "online_meeting" || !provider) return;
+    try {
+      const { eventId, meetingUrl } = await provider.createEvent(authFor(host), {
+        requestId: b.token,
+        summary: `${eventType.title}: ${b.invitee_name}`,
+        description: [b.notes, `${b.invitee_name} <${b.invitee_email}>`].filter(Boolean).join("\n\n"),
+        start: b.start_utc,
+        end: b.end_utc,
+      });
+      db.prepare("UPDATE bookings SET calendar_provider = ?, calendar_event_id = ?, meeting_url = ? WHERE id = ?").run(
+        provider.id,
+        eventId,
+        meetingUrl,
+        b.id,
+      );
+    } catch (err) {
+      console.error(`Could not create ${provider.id} calendar event:`, err);
+    }
+  }
+
+  async function updateCalendarEvent(b: Booking, action: "move" | "delete") {
+    const { host } = bookingContext(b);
+    const provider = connected(host);
+    // Only the account that created the event can change it.
+    if (!b.calendar_event_id || !provider || provider.id !== b.calendar_provider) return;
+    try {
+      if (action === "move") await provider.moveEvent(authFor(host), b.calendar_event_id, b.start_utc, b.end_utc);
+      else await provider.deleteEvent(authFor(host), b.calendar_event_id);
+    } catch (err) {
+      console.error(`Could not ${action} ${provider.id} calendar event:`, err);
+    }
+  }
+
+  api.get("/locale", (_req, res) => {
+    const host = getHost();
+    res.json({ language: host.language, hostSlug: host.slug });
+  });
 
   // ---------- Public booking pages ----------
 
@@ -86,7 +191,7 @@ export function createApi(db: DatabaseSync) {
     res.json({ timezone, days });
   });
 
-  api.post("/public/:host/:event/book", (req, res) => {
+  api.post("/public/:host/:event/book", async (req, res) => {
     const host = hostBySlug(req.params.host);
     const eventType = eventBySlug(host, req.params.event);
     const body = req.body ?? {};
@@ -96,6 +201,7 @@ export function createApi(db: DatabaseSync) {
     const start = parseInstant(body.start);
 
     // Check-then-insert inside one write transaction so two invitees can't take the same slot.
+    const token = randomUUID();
     db.exec("BEGIN IMMEDIATE");
     try {
       const ok = isSlotAvailable(
@@ -103,7 +209,6 @@ export function createApi(db: DatabaseSync) {
         start.toString(),
       );
       if (!ok) throw new HttpError(409, "That time is no longer available. Please pick another.");
-      const token = randomUUID();
       db.prepare(
         `INSERT INTO bookings (token, event_type_id, start_utc, end_utc, invitee_name, invitee_email, invitee_timezone, notes, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -119,11 +224,13 @@ export function createApi(db: DatabaseSync) {
         new Date().toISOString(),
       );
       db.exec("COMMIT");
-      res.status(201).json(bookingView(bookingByToken(token)));
     } catch (err) {
       db.exec("ROLLBACK");
       throw err;
     }
+    await createCalendarEvent(bookingByToken(token));
+    notify({ kind: "booked" }, token);
+    res.status(201).json(bookingView(bookingByToken(token)));
   });
 
   // ---------- Invitee self-service (by secret token) ----------
@@ -132,13 +239,13 @@ export function createApi(db: DatabaseSync) {
     res.json(bookingView(bookingByToken(req.params.token)));
   });
 
-  api.post("/bookings/:token/cancel", (req, res) => {
+  api.post("/bookings/:token/cancel", async (req, res) => {
     const b = bookingByToken(req.params.token);
-    cancelBooking(b, String(req.body?.reason ?? ""));
+    await cancelBooking(b, String(req.body?.reason ?? ""), "invitee");
     res.json(bookingView(bookingByToken(b.token)));
   });
 
-  api.post("/bookings/:token/reschedule", (req, res) => {
+  api.post("/bookings/:token/reschedule", async (req, res) => {
     const b = bookingByToken(req.params.token);
     if (b.status !== "active") throw new HttpError(409, "This booking was cancelled.");
     const { eventType } = bookingView(b);
@@ -157,7 +264,7 @@ export function createApi(db: DatabaseSync) {
         start.toString(),
       );
       if (!ok) throw new HttpError(409, "That time is no longer available. Please pick another.");
-      db.prepare("UPDATE bookings SET start_utc = ?, end_utc = ? WHERE id = ?").run(
+      db.prepare("UPDATE bookings SET start_utc = ?, end_utc = ?, sequence = sequence + 1 WHERE id = ?").run(
         start.toString(),
         start.add({ minutes: eventType.duration }).toString(),
         b.id,
@@ -167,13 +274,15 @@ export function createApi(db: DatabaseSync) {
       db.exec("ROLLBACK");
       throw err;
     }
+    await updateCalendarEvent(bookingByToken(b.token), "move");
+    if (b.start_utc !== start.toString()) notify({ kind: "rescheduled", previousStart: b.start_utc }, b.token);
     res.json(bookingView(bookingByToken(b.token)));
   });
 
   // ---------- Host dashboard ----------
 
   api.get("/me", (_req, res) => {
-    res.json(getHost());
+    res.json(ownerView());
   });
 
   api.put("/me", (req, res) => {
@@ -181,15 +290,78 @@ export function createApi(db: DatabaseSync) {
     const slug = requireSlug(body.slug);
     const clash = db.prepare("SELECT id FROM hosts WHERE slug = ? AND id != ?").get(slug, HOST_ID);
     if (clash) throw new HttpError(409, "That URL is taken.");
-    db.prepare("UPDATE hosts SET name = ?, slug = ?, email = ?, timezone = ?, welcome = ? WHERE id = ?").run(
+    const current = getHost();
+    const language = body.language ?? current.language;
+    if (language !== "en" && language !== "sv") throw new HttpError(400, "Language must be en or sv.");
+    const emailVia = body.email_via ?? current.email_via;
+    if (emailVia !== "smtp" && emailVia !== "microsoft") throw new HttpError(400, "email_via must be smtp or microsoft.");
+    db.prepare("UPDATE hosts SET name = ?, slug = ?, email = ?, timezone = ?, welcome = ?, language = ?, email_via = ? WHERE id = ?").run(
       requireText(body.name, "Name"),
       slug,
       requireEmail(body.email),
       parseTimezone(body.timezone),
       String(body.welcome ?? "").slice(0, 1000),
+      language,
+      emailVia,
       HOST_ID,
     );
-    res.json(getHost());
+    res.json(ownerView());
+  });
+
+  // ---------- Calendar connection (Google or Microsoft 365) ----------
+
+  const pendingStates = new Map<string, { provider: CalendarProviderId; expires: number }>();
+  const providerParam = (value: string) => {
+    const id = PROVIDER_IDS.find((p) => p === value);
+    if (!id) throw new HttpError(404, "Unknown calendar provider.");
+    return providers[id];
+  };
+
+  api.get("/calendar/:provider/connect", (req, res) => {
+    const provider = providerParam(req.params.provider);
+    if (!provider.configured()) throw new HttpError(400, `${provider.id} is not configured on the server.`);
+    const state = randomBytes(16).toString("hex");
+    pendingStates.set(state, { provider: provider.id, expires: Date.now() + 10 * 60_000 });
+    res.redirect(provider.authUrl(state));
+  });
+
+  api.get("/calendar/:provider/callback", async (req, res) => {
+    const back = (params: Record<string, string>) => res.redirect(`/app/settings?${new URLSearchParams(params)}`);
+    const provider = providerParam(req.params.provider);
+    const state = String(req.query.state ?? "");
+    const pending = pendingStates.get(state);
+    pendingStates.delete(state);
+    if (req.query.error) {
+      return back({ calendar: "error", message: String(req.query.error_description ?? req.query.error) });
+    }
+    if (!pending || pending.provider !== provider.id || pending.expires < Date.now()) {
+      return back({ calendar: "error", message: "The sign-in link expired. Please try again." });
+    }
+    try {
+      const { refreshToken, email } = await provider.exchangeCode(String(req.query.code ?? ""));
+      const previous = getHost();
+      if (previous.calendar_refresh_token && previous.calendar_provider) {
+        await providers[previous.calendar_provider].revoke(previous.calendar_refresh_token);
+      }
+      db.prepare("UPDATE hosts SET calendar_provider = ?, calendar_refresh_token = ?, calendar_email = ? WHERE id = ?").run(
+        provider.id,
+        refreshToken,
+        email,
+        HOST_ID,
+      );
+      back({ calendar: "connected", provider: provider.id });
+    } catch (err) {
+      back({ calendar: "error", message: (err as Error).message });
+    }
+  });
+
+  api.post("/calendar/disconnect", async (_req, res) => {
+    const host = getHost();
+    if (host.calendar_refresh_token && host.calendar_provider) {
+      await providers[host.calendar_provider].revoke(host.calendar_refresh_token);
+    }
+    db.prepare("UPDATE hosts SET calendar_provider = '', calendar_refresh_token = '', calendar_email = '' WHERE id = ?").run(HOST_ID);
+    res.json(ownerView());
   });
 
   api.get("/event-types", (_req, res) => {
@@ -273,12 +445,12 @@ export function createApi(db: DatabaseSync) {
     res.json(rows);
   });
 
-  api.post("/scheduled/:id/cancel", (req, res) => {
+  api.post("/scheduled/:id/cancel", async (req, res) => {
     const b = db
       .prepare("SELECT b.* FROM bookings b JOIN event_types e ON e.id = b.event_type_id WHERE b.id = ? AND e.host_id = ?")
       .get(Number(req.params.id), HOST_ID) as Booking | undefined;
     if (!b) throw new HttpError(404, "Booking not found.");
-    cancelBooking(b, String(req.body?.reason ?? ""));
+    await cancelBooking(b, String(req.body?.reason ?? ""), "host");
     res.json({ ok: true });
   });
 
@@ -292,9 +464,14 @@ export function createApi(db: DatabaseSync) {
     }
   });
 
-  function cancelBooking(b: Booking, reason: string) {
+  async function cancelBooking(b: Booking, reason: string, by: "invitee" | "host") {
     if (b.status === "cancelled") return;
-    db.prepare("UPDATE bookings SET status = 'cancelled', cancel_reason = ? WHERE id = ?").run(reason.slice(0, 1000), b.id);
+    db.prepare("UPDATE bookings SET status = 'cancelled', cancel_reason = ?, sequence = sequence + 1 WHERE id = ?").run(
+      reason.slice(0, 1000),
+      b.id,
+    );
+    await updateCalendarEvent(b, "delete");
+    notify({ kind: "cancelled", by, reason: reason.slice(0, 1000) }, b.token);
   }
 
   function ownEventType(id: string) {
@@ -315,7 +492,7 @@ type EventTypeInput = Omit<EventType, "id" | "host_id">;
 
 function parseEventType(body: Record<string, unknown> | undefined): EventTypeInput {
   const b = body ?? {};
-  const kinds = ["video", "phone", "in_person"] as const;
+  const kinds = ["online_meeting", "video", "phone", "in_person"] as const;
   const kind = kinds.find((k) => k === b.location_kind);
   if (!kind) throw new HttpError(400, "Choose a location.");
   const color = String(b.color ?? "");
@@ -354,7 +531,8 @@ function eventTypeValues(v: EventTypeInput) {
 }
 
 function publicHost(h: Host) {
-  return { name: h.name, slug: h.slug, timezone: h.timezone, welcome: h.welcome };
+  const meeting = h.calendar_refresh_token ? h.calendar_provider : "";
+  return { name: h.name, slug: h.slug, timezone: h.timezone, welcome: h.welcome, language: h.language, meeting_provider: meeting };
 }
 
 function requireText(value: unknown, label: string) {

@@ -31,5 +31,5 @@ export const UserIcon = () => (
 );
 
 export function LocationIcon({ kind }: { kind: LocationKind }) {
-  return kind === "video" ? <VideoIcon /> : kind === "phone" ? <PhoneIcon /> : <PinIcon />;
+  return kind === "video" || kind === "online_meeting" ? <VideoIcon /> : kind === "phone" ? <PhoneIcon /> : <PinIcon />;
 }

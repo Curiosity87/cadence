@@ -1,6 +1,29 @@
-export type LocationKind = "video" | "phone" | "in_person";
+export type LocationKind = "online_meeting" | "video" | "phone" | "in_person";
 
-export type Host = { id?: number; name: string; slug: string; email?: string; timezone: string; welcome: string };
+export type Language = "en" | "sv";
+
+export type Host = {
+  id?: number;
+  name: string;
+  slug: string;
+  email?: string;
+  timezone: string;
+  welcome: string;
+  language: Language;
+  /** Calendar account that creates online meeting links, if any. */
+  meeting_provider?: "google" | "microsoft" | "";
+};
+
+/** The host's own profile, as returned to the dashboard. */
+export type Owner = Host & {
+  email: string;
+  calendar_provider: "google" | "microsoft" | "";
+  calendar_email: string;
+  email_via: "smtp" | "microsoft";
+  providers_configured: { google: boolean; microsoft: boolean };
+  smtp_configured: boolean;
+  email_enabled: boolean;
+};
 
 export type EventType = {
   id: number;
@@ -32,6 +55,7 @@ export type Booking = {
   status: "active" | "cancelled";
   cancel_reason: string;
   created_at: string;
+  meeting_url: string;
 };
 
 export type ScheduledRow = Booking & {
@@ -41,7 +65,7 @@ export type ScheduledRow = Booking & {
   location_detail: string;
 };
 
-export type BookingView = { booking: Booking; eventType: EventType; host: Host };
+export type BookingView = { booking: Booking; eventType: EventType; host: Host; emailed: boolean };
 
 export class ApiError extends Error {
   status: number;
@@ -62,9 +86,3 @@ export async function api<T>(path: string, init?: { method?: string; body?: unkn
   if (!res.ok) throw new ApiError(res.status, data.error ?? "Request failed.");
   return data as T;
 }
-
-export const LOCATION_LABEL: Record<LocationKind, string> = {
-  video: "Video call",
-  phone: "Phone call",
-  in_person: "In-person meeting",
-};
