@@ -1,0 +1,16 @@
+services:
+  cadence:
+    build: .
+    image: cadence:latest
+    container_name: cadence
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+    volumes:
+      - cadence-data:/app/data
+
+volumes:
+  cadence-data:
